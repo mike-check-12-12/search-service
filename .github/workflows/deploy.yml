@@ -1,0 +1,145 @@
+name: Build, Scan & Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: false
+        default: "dev"
+        type: string
+
+env:
+  SERVICE_NAME: ${{ github.event.repository.name }}
+  VERSION: "v${{ github.run_number }}"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ env.VERSION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image (simulated)
+        run: |
+          echo "🐳 Building Docker image: ghcr.io/mike-check-12-12/${{ env.SERVICE_NAME }}:${{ env.VERSION }}"
+          echo "   FROM python:3.12-slim"
+          echo "   Build complete — image ready for push"
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Snyk Security Scan (simulated)
+        id: snyk
+        run: |
+          echo "🔒 Running Snyk security scan on ${{ env.SERVICE_NAME }}..."
+          echo ""
+          echo "Testing dependencies..."
+          echo "  ✓ flask@3.0.0 — no known vulnerabilities"
+          echo "  ✓ gunicorn@21.0 — no known vulnerabilities"
+          echo "  ⚠ pillow@10.1.0 — 2 medium severity issues"
+          echo ""
+          echo "Scan complete."
+          echo "  Critical: 0"
+          echo "  High: 0"  
+          echo "  Medium: 2"
+          echo "  Low: 1"
+          echo ""
+          echo "CRITICAL_COUNT=0" >> $GITHUB_OUTPUT
+          echo "HIGH_COUNT=0" >> $GITHUB_OUTPUT
+          echo "MEDIUM_COUNT=2" >> $GITHUB_OUTPUT
+          echo "LOW_COUNT=1" >> $GITHUB_OUTPUT
+
+      - name: Get Port Token
+        id: port_token
+        run: |
+          TOKEN=$(curl -s -X POST 'https://api.getport.io/v1/auth/access_token' \
+            -H 'Content-Type: application/json' \
+            -d '{"clientId":"${{ secrets.PORT_CLIENT_ID }}","clientSecret":"${{ secrets.PORT_CLIENT_SECRET }}"}' \
+            | jq -r '.accessToken')
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Push Security Finding to Port
+        run: |
+          curl -s -X POST "https://api.getport.io/v1/blueprints/securityFinding/entities?upsert=true" \
+            -H "Authorization: Bearer ${{ steps.port_token.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "identifier": "snyk-${{ env.SERVICE_NAME }}",
+              "title": "Snyk Scan — ${{ env.SERVICE_NAME }}",
+              "properties": {
+                "severity": "Medium",
+                "tool": "Snyk",
+                "issue_count": 2,
+                "scan_date": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+              },
+              "relations": {
+                "service": "${{ env.SERVICE_NAME }}"
+              }
+            }'
+          echo ""
+          echo "📊 Security finding pushed to Port catalog"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+
+    steps:
+      - name: Simulate Kubernetes Deployment
+        run: |
+          ENVIRONMENT="${{ inputs.environment || 'dev' }}"
+          echo "🚀 Deploying ${{ env.SERVICE_NAME }} ${{ env.VERSION }} to $ENVIRONMENT..."
+          echo ""
+          echo "   Cluster:     ${ENVIRONMENT}-cluster"
+          echo "   Namespace:   walmart-services"
+          echo "   Replicas:    2/2 ready"
+          echo "   Image:       ghcr.io/mike-check-12-12/${{ env.SERVICE_NAME }}:${{ env.VERSION }}"
+          echo ""
+          echo "   ArgoCD app:  ${{ env.SERVICE_NAME }}-${ENVIRONMENT}"
+          echo "   Sync status: Synced"
+          echo "   Health:      Healthy"
+          echo ""
+          echo "✅ Deployment complete"
+
+      - name: Get Port Token
+        id: port_token
+        run: |
+          TOKEN=$(curl -s -X POST 'https://api.getport.io/v1/auth/access_token' \
+            -H 'Content-Type: application/json' \
+            -d '{"clientId":"${{ secrets.PORT_CLIENT_ID }}","clientSecret":"${{ secrets.PORT_CLIENT_SECRET }}"}' \
+            | jq -r '.accessToken')
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Push Deployment to Port
+        run: |
+          ENVIRONMENT="${{ inputs.environment || 'dev' }}"
+          curl -s -X POST "https://api.getport.io/v1/blueprints/deployment/entities?upsert=true" \
+            -H "Authorization: Bearer ${{ steps.port_token.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "identifier": "${{ env.SERVICE_NAME }}-'${ENVIRONMENT}'",
+              "title": "${{ env.SERVICE_NAME }} ('${ENVIRONMENT}')",
+              "properties": {
+                "version": "${{ env.VERSION }}",
+                "status": "Healthy",
+                "argocd_application": "${{ env.SERVICE_NAME }}-'${ENVIRONMENT}'",
+                "cluster": "'${ENVIRONMENT}'-cluster",
+                "deployed_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+              },
+              "relations": {
+                "service": "${{ env.SERVICE_NAME }}",
+                "environment": "'${ENVIRONMENT}'"
+              }
+            }'
+          echo ""
+          echo "📊 Deployment entity pushed to Port catalog"

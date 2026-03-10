@@ -1,0 +1,8 @@
+apiVersion: port.io/v1
+kind: Component
+metadata:
+  name: search-service
+spec:
+  type: service
+  lifecycle: development
+  owner: inventory
